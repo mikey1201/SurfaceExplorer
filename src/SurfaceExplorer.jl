@@ -1,3 +1,5 @@
+module SurfaceExplorer
+
 using GLMakie, StaticArrays, LinearAlgebra, DifferentialEquations, Observables
 #Initial conditions
 const u₀ = SVector{3,Float64}(1.0, 0.0, 0.0)
@@ -5,9 +7,13 @@ const Z₀ = SMatrix{3,3,Float64}(I)
 const Y₀ = @SVector zeros(9)
 const X₀ = SVector{21,Float64}(u₀..., Z₀..., Y₀...)
 #adj : X -> adjugate(X)
-@inline adj(X) = @SMatrix [X[5]*X[9]-X[6]*X[8] X[3]*X[8]-X[2]*X[9] X[2]*X[6]-X[3]*X[5]; X[6]*X[7]-X[4]*X[9] X[1]*X[9]-X[3]*X[7] X[3]*X[4]-X[1]*X[6]; X[4]*X[8]-X[5]*X[7] X[2]*X[7]-X[1]*X[8] X[1]*X[5]-X[2]*X[4]]
+@inline adj(X) = @SMatrix [X[5]*X[9]-X[6]*X[8] X[3]*X[8]-X[2]*X[9] X[2]*X[6]-X[3]*X[5]; 
+                           X[6]*X[7]-X[4]*X[9] X[1]*X[9]-X[3]*X[7] X[3]*X[4]-X[1]*X[6]; 
+                           X[4]*X[8]-X[5]*X[7] X[2]*X[7]-X[1]*X[8] X[1]*X[5]-X[2]*X[4]]
 #hat : v -> v̂
-@inline hat(v) = @SMatrix [0 -v[3] v[2]; v[3] 0 -v[1]; -v[2] v[1] 0]
+@inline hat(v) = @SMatrix [ 0  -v[3] v[2]; 
+                           v[3]  0  -v[1]; 
+                          -v[2] v[1]  0  ]
 #unpackX: X -> (u, Z, Y)
 @inline unpackX(X) = SVector{3,Float64}(X[1], X[2], X[3]), SMatrix{3,3}(ntuple(i -> X[3+i], 9)), SMatrix{3,3}(ntuple(i -> X[12+i], 9))
 #Computing the geodesic u̇ (Euler-Arnold), the linearized velocity Ż (Linearized Euler-Arnold), and the Jacobi field Ẏ
@@ -63,13 +69,13 @@ const surfacecache = Dict{}()
 function updatesurface!(Λ, resolution, T)
     if haskey(surfacecache, (Λ, resolution, T)) 
         println("WORKER: Loading cached surface for: (Λ=$Λ, resolution=$resolution, tmax=$T)")
-        surface = surfacecache[(Λ, resolution, T)]
+        surface = surfacecache[(Λ, resolution, T)]  #get surface from cache if it exists already
     else
         println("WORKER: Creating surface for: (Λ=$Λ, resolution=$resolution, tmax=$T)")
         isready(requestchannel) && return println("WORKER: Cancelled for new request.")
         x, y, z, Tmat = createsurface(Λ, resolution, T)
         surface = x, y, z, Tmat, extrema(Tmat)
-        surfacecache[(Λ, resolution, T)] = surface
+        surfacecache[(Λ, resolution, T)] = surface  #cache newly generated surface
     end
     surfaceholder.x = surface
     notify(updatetrigger)
@@ -83,14 +89,14 @@ function submitrequest(Λ, resolution, T)
     put!(requestchannel, (Λ, resolution, T))
 end
 
-const slidersettings(i) = (label=i, snap=false, format="", height=32, range=-2.5:0.01:2.5, startvalue=1.0, color_inactive=:lightgrey)
+const slidersettings(i) = (label=i, snap=false, format="", height=32, width=175, range=-2.5:0.01:2.5, startvalue=1.0, color_inactive=:lightgrey, tellwidth=false)
 
 function initelements()
     fig = Figure(size=(1400, 900))
     Box(fig[1:4,4], color=RGBf(0.95, 0.95, 0.95), strokecolor=:lightgrey, cornerradius=20, alignmode=Outside(-10), height=625)  #controls area
     cg = GridLayout(fig[1:4,4], default_colgap=0, alignmode=Outside(20));
     lg = GridLayout(cg[1,1:6], alignmode=Outside(20), default_colgap=0)
-    sliders = SliderGrid(lg[1:3,1], [slidersettings(i) for i in ["Λ₁","Λ₂","Λ₃"]]...)   #Sliders to control Λ values
+    sliders = SliderGrid(lg[1:3,1], [slidersettings(i) for i in ["Λ₁","Λ₂","Λ₃"]]..., halign=:left)   #Sliders to control Λ values
     textboxes = [Textbox(lg[i,2], placeholder=" ", validator=Float64, width=45, textcolor=:black, textcolor_placeholder=:black) for i in 1:3]
     rg = GridLayout(cg[2,1:6], alignmode=Outside(20))
     Label(rg[1,2:3], "Resolution:        ", justification=:right, halign=:right, fontsize=16)
@@ -103,8 +109,10 @@ function initelements()
     fg = GridLayout(cg[3,1:6], alignmode=Outside(10))
     sb = Button(fg[1,1:2], label="Save plot as png", buttoncolor=:lightgrey, padding=(20,20,20,20)) #button to save plot as png
     warning = Label(fg[2,1:2], halign=:center, padding=(0,0,0,10), fontsize=15) #warning label to check if max t is enough; lets user know if plot was saved
+    rowsize!(cg, 1, Fixed(100))
+    rowsize!(rg, 1, Fixed(90))
     colsize!(fig.layout, 1, Auto(true))
-    colsize!(fig.layout, 4, Fixed(300))
+    colsize!(fig.layout, 4, Fixed(325))
     return fig, sliders.sliders, textboxes, (tb, gb), warning, Tbox, menu, sb
 end
 
@@ -125,11 +133,12 @@ function initgui()
     on(newΛ -> updateplot(newΛ, resolution[], T[], Λ[], textboxes), throttle(0.01, Λ))                          #On slider move submit request; Slider is throttled
     on(_ -> (x[], y[], z[], Tmat[], colorrange[]) = surfaceholder.x, updatetrigger)                             #Update plot data When the worker notifies the trigger
     [on(_ -> updatesliders(sliders, textboxes, Λ), throttle(0.1, tb.displayed_string)) for tb in textboxes]     #On textbox edit move sliders to
-    on(_ -> submitrequest(Λ[], resfrombox(customres[1]), T[]), customres[2].clicks)                             #submit request when generate is pressed
-    on(string -> updateT(T, string, Λ[], resolution[]), throttle(0.1, Tbox.displayed_string))                   #submit request when max time box is edited
+    on(_ -> generatecustom(Λ[], customres[1], Tbox.displayed_string[]), customres[2].clicks)                    #submit request when generate is pressed
     on(_ -> updatewarning(warning, Tmat[], T[]), throttle(0.1, Tmat))                                           #warn user if max time was insufficient to capture surface
     on(_ -> saveplot(Λ[], axis, fig, warning), sb.clicks)                                                       #save plot as png on click
 end
+
+generatecustom(Λ, res, string) = submitrequest(Λ, resfrombox(res), something(tryparse(Int, string), 15))
 
 updateplot(newΛ, resolution, T, Λ, textboxes) = (submitrequest(ifelse.(newΛ.==0, 1e-2, newΛ), resolution, T); updatetextboxes(Λ, textboxes))
 
@@ -137,13 +146,13 @@ updatetextboxes(Λ, textboxes) = [tb.displayed_string=string(Λ[i]) for (i, tb) 
 
 updatesliders(sld, tbx, Λ) = set_close_to!.(sld, @SVector [something(tryparse(Float64, tbx[i].displayed_string[]), Λ[][i]) for i in 1:3])
 
-updateT(T, string, Λ, resolution) = (T[] = something(tryparse(Int, string), 15); submitrequest(Λ, resolution, T[]))
+updatewarning(w, Tmat, T) = ((w.text,w.color) = (maximum(Tmat) == T) ? ("Try raising max time", :red) : ("Successful surface plot", :chartreuse4))
 
-updatewarning(w, Tmat, T) = ((w.text,w.color) = (maximum(Tmat) == T) ? ("Try raising max time", :red) : ("Succesful surface plot", :chartreuse4))
+createfilename(Λ, azi, ele) = "$(Λ[1])_$(Λ[2])_$(Λ[3])_$(Int(floor(azi*ele*1e5))).png"
 
 function saveplot(Λ, axis, fig, w)
     try
-        fn = "$(Λ[1])_$(Λ[2])_$(Λ[3])__$(floor(axis.azimuth[]*100)/100)_$(floor(axis.elevation[]*100)/100).png"
+        fn = createfilename(Λ, axis.azimuth[], axis.elevation[])
         save(fn, fig)
         w.text, w.color = "Saved $fn", :chartreuse4
     catch e
@@ -164,6 +173,16 @@ function start()
     end
 end
 
-#========================================================================================================#
+function julia_main()::Cint
+    try
+        start()
+    catch e
+        @error "Error in main!" exception=(e, catch_backtrace())
+        return 1
+    end
+    return 0
+end
 
-start()
+julia_main()
+
+end
