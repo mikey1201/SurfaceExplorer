@@ -22,6 +22,7 @@ function F(X, Λ, t) #Benchmark Results: Out-of-Place (SVector) => Trial(6.039 m
     u̇ = (hat(Λ .* u) * u) ./ Λ                  #u̇ = ad_u⃰(u)
     Ż = (hat(u) * (Λ .* Z)) - (hat(Λ .* u) * Z) #Ż = ad_u⃰(Z) + ad_Z⃰(u)
     Ẏ = Z - (hat(u) * Y)                        #Ẏ = Z - ad_u(Y)
+
     return SVector{21,Float64}(u̇..., Ż..., Ẏ...)
 end 
 #The callback will terminate the solver when either of the out variables are equal to 0
@@ -125,10 +126,29 @@ function initgui()
     Λ, resolution, T, x, y, z, Tmat, colorrange = initobservables(sliders)
     submitrequest(Λ[], resolution[], T[])
     updatetextboxes(Λ[], textboxes)
+    initialvec = Observable("Hover over surface to see original u₀ vector")
+    Label(fig[4, 1:3], initialvec, fontsize=18, halign=:left, padding=(10,10,10,10))
+    rowsize!(fig.layout, 4, Fixed(40))
+
     axis = Axis3(fig[1:4,1:3], aspect=(1,1,1), xlabel="X", ylabel="Y", zlabel="Z", limits=(-13, 13, -13, 13, -13, 13))
-    surface!(axis, x, y, z; color=Tmat, colormap=:viridis, colorrange=colorrange) #Plot first surface
+    surface = surface!(axis, x, y, z; color=Tmat, colormap=:viridis, colorrange=colorrange)
     display(fig)
 
+    on(events(fig.scene).mouseposition, priority = 2) do event
+        plt, idx = pick(fig.scene)
+        if plt === surface && idx > 0
+            tval = Tmat[][idx]
+            point = Point3f(x[][idx], y[][idx], z[][idx])
+            if tval > 0
+                u₀ = point / tval
+                xs, ys, zs = round.(u₀, digits=4)
+                initialvec[] = "u₀: ($xs, $ys, $zs)"
+            end
+        else
+            initialvec[] = "u₀: (?, ?, ?)"
+        end
+        return Consume(false)
+    end
     on(newresolution -> (resolution[] = newresolution; submitrequest(Λ[], newresolution, T[])), menu.selection) #On menu selection update resolution and submit request
     on(newΛ -> updateplot(newΛ, resolution[], T[], Λ[], textboxes), throttle(0.01, Λ))                          #On slider move submit request; Slider is throttled
     on(_ -> (x[], y[], z[], Tmat[], colorrange[]) = surfaceholder.x, updatetrigger)                             #Update plot data When the worker notifies the trigger
