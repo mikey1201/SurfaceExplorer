@@ -2,7 +2,7 @@ module SurfaceExplorer
 
 using GLMakie, StaticArrays, LinearAlgebra, DifferentialEquations, Observables
 #Initial conditions
-const u₀ = SVector{3,Float64}(1.0, 0.0, 0.0)
+const u₀ = SVector{3,Float64}(-0.2129, -0.9663, -0.1447)
 const Z₀ = SMatrix{3,3,Float64}(I)
 const Y₀ = @SVector zeros(9)
 const X₀ = SVector{21,Float64}(u₀..., Z₀..., Y₀...)
@@ -16,27 +16,40 @@ const X₀ = SVector{21,Float64}(u₀..., Z₀..., Y₀...)
                           -v[2] v[1]  0  ]
 #unpackX: X -> (u, Z, Y)
 @inline unpackX(X) = SVector{3,Float64}(X[1], X[2], X[3]), SMatrix{3,3}(ntuple(i -> X[3+i], 9)), SMatrix{3,3}(ntuple(i -> X[12+i], 9))
-#Computing the geodesic u̇ (Euler-Arnold), the linearized velocity Ż (Linearized Euler-Arnold), and the Jacobi field Ẏ
+#Computing the geodesic u̇, the linearized velocity Ż, and the Jacobi field Ẏ
 function F(X, Λ, t) #Benchmark Results: Out-of-Place (SVector) => Trial(6.039 ms), In-Place (MVector) => Trial(7.095 ms)
     u, Z, Y = unpackX(X)
-    u̇ = (hat(Λ .* u) * u) ./ Λ                  #u̇ = ad_u⃰(u)
-    Ż = (hat(u) * (Λ .* Z)) - (hat(Λ .* u) * Z) #Ż = ad_u⃰(Z) + ad_Z⃰(u)
-    Ẏ = Z - (hat(u) * Y)                        #Ẏ = Z - ad_u(Y)
 
+    u̇ = (hat(Λ .* u) * u) ./ Λ
+
+    Λû = hat(Λ .* u)
+    
+    z₁ = SVector(Z[1,1], Z[2,1], Z[3,1])
+    Λẑ₁ = hat(Λ .* z₁)
+    ż₁ = (Λû * z₁ + Λẑ₁ * u) ./ Λ
+    z₂ = SVector(Z[1,2], Z[2,2], Z[3,2])
+    Λẑ₂ = hat(Λ .* z₂)
+    ż₂ = (Λû * z₂ + Λẑ₂ * u) ./ Λ
+    z₃ = SVector(Z[1,3], Z[2,3], Z[3,3])
+    Λẑ₃ = hat(Λ .* z₃)
+    ż₃ = (Λû * z₃ + Λẑ₃ * u) ./ Λ
+    Ż = SMatrix{3,3}(ż₁..., ż₂..., ż₃...)   
+
+    Ẏ = Z - (hat(u) * Y)
+    
     return SVector{21,Float64}(u̇..., Ż..., Ẏ...)
 end 
-#The callback will terminate the solver when either of the out variables are equal to 0
-function condition(out, X, t, integrator)
+#The callback will terminate the solver when the monitored value is 0
+firstzero(X, t, integrator; Y=unpackX(X)[3]) = det(Y)   #det(Y) == 0
+firstmin(X, t, integrator) = begin
     u, Z, Y = unpackX(X)
-    Ẏ = Z - (hat(u) * Y)
-    out[1] = det(Y)
-    out[2] = sum(adj(Y) .* Ẏ)   #d/dt(det(Y)) == 0  here we solve for it by taking the Frobenius inner product of adj(Y) and Ẏ
-end                             #this computation involves near singular matrices and forces us to use tighter tolerances / more interpolants to obtain accurate results
-affect_pos!(integ, idx) = terminate!(integ)                                                                                     #High interp points allows us to lower the tolerances of the solver this is
-affect_neg!(integ, idx) = idx == 1 ? terminate!(integ) : nothing                                                                #desirable because interp points are computationally cheaper than precision
-const fzfm = VectorContinuousCallback(condition, affect_pos!, affect_neg!, 2, interp_points=20, save_positions=(false,false))   #The combination of using the DP5() solver, interp_points=20, tol=1e-5, and
-const settings = (callback=fzfm, reltol=1e-5, abstol=1e-5, dense=false, save_everystep=false, save_start=false, save_end=true)  #a VectorContinuousCallback is a sweet spot for speed and accuracy
-#A CallbackSet is faster, but for some reason it's less accurate than the VectorContinuousCallback with these settings
+    Ẏ = Z - (hat(u) * Y)    
+    sum(adj(Y) .* Ẏ)        #Frobenius inner product of adj(Y) and Ẏ == d/dt(det(Y)) == 0
+end
+const fz = ContinuousCallback(firstzero, terminate!; save_positions=(false,false))
+const fm = ContinuousCallback(firstmin, terminate!, nothing; save_positions=(false,false))
+const fzfm = CallbackSet(fz, fm)
+const settings = (callback=fzfm, reltol=1e-5, abstol=1e-5, dense=false, save_everystep=false, save_start=false, save_end=true)
 
 #========================================================================================================#
 
@@ -126,7 +139,7 @@ function initgui()
     Λ, resolution, T, x, y, z, Tmat, colorrange = initobservables(sliders)
     submitrequest(Λ[], resolution[], T[])
     updatetextboxes(Λ[], textboxes)
-    initialvec = Observable("Hover over surface to see original u₀ vector")
+    initialvec = Observable("")
     Label(fig[4, 1:3], initialvec, fontsize=18, halign=:left, padding=(10,10,10,10))
     rowsize!(fig.layout, 4, Fixed(40))
 
@@ -134,7 +147,7 @@ function initgui()
     surface = surface!(axis, x, y, z; color=Tmat, colormap=:viridis, colorrange=colorrange)
     display(fig)
 
-    on(events(fig.scene).mouseposition, priority = 2) do event
+    on(events(fig.scene).mouseposition, priority = 2) do event  #On mouse hover over surface display original u₀ vector
         plt, idx = pick(fig.scene)
         if plt === surface && idx > 0
             tval = Tmat[][idx]
@@ -145,7 +158,7 @@ function initgui()
                 initialvec[] = "u₀: ($xs, $ys, $zs)"
             end
         else
-            initialvec[] = "u₀: (?, ?, ?)"
+            initialvec[] = ""
         end
         return Consume(false)
     end
